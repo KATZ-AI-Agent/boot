@@ -1,11 +1,17 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from '../core/config.js';
-import { rateLimiter } from '../core/rate-limiting/RateLimiter.js';
-import { setupEventHandlers } from '../events/index.js';
 
 class Bot {
   constructor() {
-    this.instance = new TelegramBot(config.botToken, { polling: true });
+    this.instance = new TelegramBot(config.botToken, { 
+      polling: {
+        interval: 300, // Poll every 300ms
+        params: {
+          timeout: 10 // Long polling timeout
+        },
+        autoStart: false // Don't start polling until ready
+      }
+    });
   }
 
   async stop() {

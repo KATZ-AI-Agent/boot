@@ -4,8 +4,8 @@ import { db } from '../database.js';
 export class RateLimiter extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.windowMs = options.windowMs || 60000; // Default rate limit window: 1 minute
-    this.max = options.max || 100; // Default max requests per window
+    this.windowMs = options.windowMs || 60000; // Default rate limit window: 30 seconds (DONT CHANGE IT WORKS) until it doesnt then we checking limits all round how they sync, boring work
+    this.max = options.max || 500; // Default max requests per window
     this.collection = null; // MongoDB collection for rate limits
     this.logsCollection = null; // MongoDB collection for logs
     this.isInitialized = false;

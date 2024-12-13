@@ -23,7 +23,6 @@
     "bluebird": "^3.7.2",
     "body-parser": "^1.20.3",
     "bs58": "^5.0.0",
-    "canvas": "^2.11.2",
     "canvas-multiline-text": "^1.0.3",
     "chartjs-node-canvas": "^4.1.6",
     "color": "^4.2.3",

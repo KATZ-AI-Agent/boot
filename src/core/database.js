@@ -1,8 +1,26 @@
 import mongoose from 'mongoose';
 import { MongoClient, ServerApiVersion } from 'mongodb';
-import { config } from './config.js';
 import { DB_POOL_SIZE, DB_IDLE_TIMEOUT, DB_CONNECT_TIMEOUT } from './constants.js';
+import { config } from './config.js';
 import { EventEmitter } from 'events';
+import { ErrorHandler } from './errors/index.js';
+
+// Constants for database configuration
+const DB_CONFIG = {
+  POOL_SIZE: 10,
+  MIN_POOL_SIZE: 5,
+  CONNECTION_TIMEOUT: 5000,
+  SOCKET_TIMEOUT: 300000,
+  SERVER_SELECTION_TIMEOUT: 5000,
+  HEARTBEAT_FREQUENCY: 30000,
+  RETRY_WRITES: true,
+  AUTO_INDEX: false,
+  WRITE_CONCERN: 'majority',
+  BUFFER_COMMANDS: false,
+  BUFFER_TIMEOUT: 5000,
+  MAX_RETRIES: 5,
+  RETRY_DELAY: 5000
+};
 
 class Database extends EventEmitter {
   constructor() {
@@ -11,10 +29,14 @@ class Database extends EventEmitter {
     this.database = null;
     this.isInitialized = false;
     this.initializationPromise = null;
-    this.retries = 5; // Maximum retries for connecting
-    this.retryDelay = 5000; // Delay between retries in milliseconds
+    this.retries = DB_CONFIG.MAX_RETRIES;
+    this.retryDelay = DB_CONFIG.RETRY_DELAY;
   }
 
+  /**
+   * Connect to MongoDB database
+   * @returns {Promise<boolean>} Connection status
+   */
   async connect() {
     if (this.initializationPromise) {
       return this.initializationPromise;
@@ -24,18 +46,25 @@ class Database extends EventEmitter {
     return this.initializationPromise;
   }
 
+  /**
+   * Initialize database connection with retries
+   * @private
+   * @returns {Promise<boolean>}
+   */
   async _initialize() {
     while (this.retries > 0) {
       try {
+        console.log('🚀 Connecting to MongoDB Atlas...');
+
         // Mongoose connection options
         const mongooseOptions = {
           serverApi: ServerApiVersion.v1,
-          maxPoolSize: DB_POOL_SIZE || 50, // Controls the number of concurrent connections
+          maxPoolSize: DB_CONFIG.POOL_SIZE || 10, // Controls the number of concurrent connections
           minPoolSize: 10, // Maintain a minimum pool size
-          connectTimeoutMS: DB_CONNECT_TIMEOUT || 60000, // Connection timeout
-          socketTimeoutMS: 300000, // 5 minutes Socket timeout
-          serverSelectionTimeoutMS: 30000, // MongoDB server selection timeout
-          heartbeatFrequencyMS: 30000, // 30 seconds
+          connectTimeoutMS: DB_CONFIG.CONNECTION_TIMEOUT || 5000, // Connection timeout
+          socketTimeoutMS: DB_CONFIG.SOCKET_TIMEOUT, // 5 minutes Socket timeout
+          serverSelectionTimeoutMS: DB_CONFIG.SERVER_SELECTION_TIMEOUT, // MongoDB server selection timeout
+          heartbeatFrequencyMS: DB_CONFIG.HEARTBEAT_FREQUENCY, // 30 seconds
           retryWrites: true, // Enable retryable writes
           autoIndex: false, // Disable auto-indexing for production
           w: 'majority', // Majority write concern
@@ -54,45 +83,78 @@ class Database extends EventEmitter {
           w: 'majority',
         };
 
-        console.log('🚀 Connecting to MongoDB Atlas with MongoClient...');
+        // Connect using MongoClient
         this.client = new MongoClient(config.mongoUri, mongoClientOptions);
         await this.client.connect();
 
-        // Get the database reference
+        // Get database reference
         this.database = this.client.db(config.mongoDatabase || 'KATZdatabase1');
 
-        // Test connections
-        await mongoose.connection.db.command({ ping: 1 });
-        await this.database.command({ ping: 1 });
+        // Test both connections
+        await this._testConnections();
 
-        console.log('✅ Successfully connected to MongoDB Atlas');
         this.isInitialized = true;
         this.emit('connected');
+        console.log('✅ Successfully connected to MongoDB Atlas');
 
-        return { client: this.client, database: this.database };
+        return true;
       } catch (error) {
-        this.retries -= 1;
-        console.error(`❌ MongoDB connection failed. Retries left: ${this.retries}`, error);
-
-        if (this.retries === 0) {
-          console.error('❌ All retries exhausted. Unable to connect to MongoDB Atlas.');
-          this.isInitialized = false;
-          this.initializationPromise = null;
-          this.emit('error', error);
-          throw error;
-        }
-
-        console.log(`🔄 Retrying in ${this.retryDelay / 1000} seconds...`);
-        await new Promise((resolve) => setTimeout(resolve, this.retryDelay));
+        await this._handleConnectionError(error);
       }
     }
   }
 
+  /**
+   * Test database connections
+   * @private
+   */
+  async _testConnections() {
+    try {
+      // Test Mongoose connection
+      await mongoose.connection.db.command({ ping: 1 });
+      
+      // Test MongoClient connection
+      await this.database.command({ ping: 1 });
+    } catch (error) {
+      throw new Error('Failed to verify database connections: ' + error.message);
+    }
+  }
+
+  /**
+   * Handle connection errors and retries
+   * @private
+   * @param {Error} error - Connection error
+   */
+  async _handleConnectionError(error) {
+    this.retries--;
+    console.error(`❌ MongoDB connection failed. Retries left: ${this.retries}`, error);
+
+    if (this.retries === 0) {
+      this.isInitialized = false;
+      this.initializationPromise = null;
+      this.emit('error', error);
+      throw new Error('Failed to connect to MongoDB after all retries');
+    }
+
+    console.log(`🔄 Retrying in ${this.retryDelay / 1000} seconds...`);
+    await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+  }
+
+  /**
+   * Disconnect from database
+   */
   async disconnect() {
     try {
       console.log('🔌 Disconnecting from MongoDB...');
-      if (this.client) await this.client.close();
-      if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
+      
+      if (this.client) {
+        await this.client.close();
+      }
+      
+      if (mongoose.connection.readyState !== 0) {
+        await mongoose.disconnect();
+      }
+      
       this.isInitialized = false;
       this.initializationPromise = null;
       console.log('✅ Disconnected from MongoDB');
@@ -104,6 +166,10 @@ class Database extends EventEmitter {
     }
   }
 
+  /**
+   * Get database instance
+   * @returns {Db} MongoDB database instance
+   */
   getDatabase() {
     if (!this.isInitialized || !this.database) {
       throw new Error('Database not initialized. Call connect first.');
@@ -111,26 +177,44 @@ class Database extends EventEmitter {
     return this.database;
   }
 
+  /**
+   * Check database health
+   * @returns {Promise<Object>} Health status
+   */
   async checkHealth() {
     try {
+      // Check Mongoose connection
       if (mongoose.connection.readyState === 1) {
         console.log('✅ Mongoose connection is healthy');
       } else {
         throw new Error('Mongoose connection is not ready');
       }
 
+      // Check MongoClient connection
       const pingResult = await this.database.command({ ping: 1 });
-      if (!pingResult.ok) throw new Error('MongoClient ping failed');
+      if (!pingResult.ok) {
+        throw new Error('MongoClient ping failed');
+      }
 
       console.log('✅ MongoClient connection is healthy');
-      return { status: 'healthy', timestamp: new Date().toISOString() };
+      return { 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        mongooseState: mongoose.connection.readyState,
+        clientConnected: this.client.topology.isConnected()
+      };
     } catch (error) {
       console.error('❌ Database health check failed:', error);
-      return { status: 'unhealthy', error: error.message, timestamp: new Date().toISOString() };
+      return { 
+        status: 'unhealthy', 
+        error: error.message, 
+        timestamp: new Date().toISOString() 
+      };
     }
   }
 }
 
+// Export singleton instance
 export const db = new Database();
 
 // Handle process termination gracefully

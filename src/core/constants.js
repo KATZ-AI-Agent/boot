@@ -1,3 +1,4 @@
+// Network Constants
 export const NETWORKS = {
   ETHEREUM: 'ethereum',
   BASE: 'base', 
@@ -10,6 +11,7 @@ export const NETWORK_DISPLAY_NAMES = {
   [NETWORKS.SOLANA]: 'Solana'
 };
 
+// User States
 export const USER_STATES = {
   AWAITING_REGISTRATION: 'AWAITING_REGISTRATION',
   WAITING_MEME_INPUT: 'WAITING_MEME_INPUT',
@@ -25,6 +27,7 @@ export const USER_STATES = {
   MAIN_MENU: 'MAIN_MENU'
 };
 
+// Error Messages
 export const ERROR_MESSAGES = {
   GENERAL_ERROR: '❌ An error occurred. Please try again.',
   NETWORK_ERROR: '❌ Network error. Please check your connection.',
@@ -35,10 +38,41 @@ export const ERROR_MESSAGES = {
   NOT_CONFIGURED: '❌ Please configure your settings first.'
 };
 
-export const DB_POOL_SIZE = 10;
-export const DB_IDLE_TIMEOUT = 30000;
-export const DB_CONNECT_TIMEOUT = 30000;
+// Welcome Messages
+export const WELCOME_MESSAGES = {
+  NEW_USER: `*Say "Hey to KATZ!" to bother him* 🐈‍⬛\n\n` +
+           `*{username}*, ready for the trenches? 🌳🌍🕳️\n\n` +
+           `_Intelligent & autonomous meme trading..._ 🤖💎\n\n` +
+           `Need help? Type /help or /start over.`,
+           
+  RETURNING_USER: `*Welcome Back {username}!* 🐈‍⬛\n\n` +
+                 `Ready for the trenches? 🌳🕳️\n\n` +
+                 `_Let's find gems..._ 💎\n\n` +
+                 `Need help? Type /help or /start over.`
+};
 
+// Registration Messages
+export const REGISTRATION_MESSAGES = {
+  PROMPT: `*🆕 First Time?...*\n\n` +
+         `_Let's get you set up with your own secure wallets and access to all KATZ features!_\n\n` +
+         `• Secure wallet creation\n` +
+         `• Multi-chain trenching\n` +
+         `• AI-powered trading\n` +
+         `• And much more...\n\n` +
+         `Ready to start? 🚀`,
+
+  SUCCESS: `*Welcome to KATZ!* 🐈‍⬛\n\n` +
+          `*{username}*, your wallets are ready.\n\n` +
+          `_Let's start finding gems in the trenches..._ 💎\n\n` +
+          `Type /help to see available commands.`
+};
+
+// Database Constants
+export const DB_POOL_SIZE = 10;
+export const DB_IDLE_TIMEOUT = 5000;
+export const DB_CONNECT_TIMEOUT = 7000;
+
+// Canvas Dimensions
 export const CANVAS_DIMENSIONS = {
   WIDTH: 800,
   HEIGHT: 1250

@@ -1,53 +1,42 @@
 import { EventEmitter } from 'events';
+import { ErrorHandler } from '../core/errors/index.js';
+import { MessageHandler } from '../core/MessageHandler.js';
 
 export class CommandRegistry extends EventEmitter {
   constructor(bot) {
     super();
     this.bot = bot;
     this.commands = new Map();
+    this.messageHandler = new MessageHandler(bot, this);
+    this.initialized = false;
+  }
+
+  async initialize() {
+    if (this.initialized) return;
+
+    try {
+      await this.messageHandler.initialize();
+      this.initialized = true;
+      this.emit('initialized');
+      return true;
+    } catch (error) {
+      await ErrorHandler.handle(error);
+      throw error;
+    }
   }
 
   registerCommand(command) {
+    if (!command.command || !command.description) {
+      throw new Error('Invalid command format');
+    }
+
     this.commands.set(command.command, command);
-    command.register();
-  }
+    command.register?.();
 
-  async handleCallback(query) {
-    for (const command of this.commands.values()) {
-      try {
-        if (await command.handleCallback(query)) {
-          this.emit('callback', { 
-            command: command.command, 
-            action: query.data,
-            userId: query.from.id 
-          });
-          return true;
-        }
-      } catch (error) {
-        console.error(`Error in callback handler for ${command.command}:`, error);
-        this.emit('error', { command: command.command, error });
-      }
-    }
-    return false;
-  }
-
-  async handleMessage(msg) {
-    for (const command of this.commands.values()) {
-      try {
-        if (command.handleInput && await command.handleInput(msg)) {
-          this.emit('message', {
-            command: command.command,
-            userId: msg.from.id,
-            type: msg.voice ? 'voice' : 'text'
-          });
-          return true;
-        }
-      } catch (error) {
-        console.error(`Error handling message for ${command.command}:`, error);
-        this.emit('error', { command: command.command, error });
-      }
-    }
-    return false;
+    this.emit('commandRegistered', {
+      command: command.command,
+      description: command.description
+    });
   }
 
   getCommands() {
@@ -58,7 +47,9 @@ export class CommandRegistry extends EventEmitter {
   }
 
   cleanup() {
+    this.messageHandler.cleanup();
     this.commands.clear();
     this.removeAllListeners();
+    this.initialized = false;
   }
 }
