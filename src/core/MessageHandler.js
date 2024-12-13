@@ -17,7 +17,26 @@ export class MessageHandler extends EventEmitter {
     try {
       // Set up core message handlers
       this.bot.on('message', this.handleMessage.bind(this));
-      this.bot.on('callback_query', this.handleCallback.bind(this));
+
+      this.// Handle callback queries
+      bot.on('callback_query', async (query) => {
+        try {
+          const handled = await registry.handleCallback(query);
+          if (!handled) {
+            console.warn('Unhandled callback query:', query.data);
+          }
+          await bot.answerCallbackQuery(query.id);
+        } catch (error) {
+          await ErrorHandler.handle(error, bot, query.from.id);
+          console.error('Error handling callback query:', error);
+          await bot.answerCallbackQuery(query.id, {
+            text: '❌ An error occurred while processing your request.',
+            show_alert: true
+          });
+        }
+      });
+
+      //Setup Voice message handlers
       this.bot.on('voice', this.handleVoice.bind(this));
 
       this.initialized = true;

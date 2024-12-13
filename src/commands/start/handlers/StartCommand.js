@@ -1,3 +1,6 @@
+// src/commands/start/StartCommand.js
+import { Command } from '../base/Command.js';
+import { MenuHandler } from './handlers/MenuHandler.js';
 import { BaseCommand } from '../../base/BaseCommand.js';
 import { User } from '../../../models/User.js';
 import { networkState } from '../../../services/networkState.js';
@@ -7,12 +10,13 @@ import { MenuHandler } from './MenuHandler.js';
 import { USER_STATES } from '../../../core/constants.js';
 import { ErrorHandler } from '../../../core/errors/index.js';
 
-export class StartCommand extends BaseCommand {
+export class StartCommand extends Command {
   constructor(bot, eventHandler) {
     super(bot);
     this.command = '/start';
     this.description = 'Start the bot';
     this.pattern = /^\/start$/;
+    this.menuHandler = new MenuHandler(bot);
 
     if (!eventHandler) {
       throw new Error('Event handler is required for StartCommand');
@@ -46,11 +50,6 @@ export class StartCommand extends BaseCommand {
     this.eventHandler.on('retry_start', async (query) => {
       await this.safeHandle(() => this.retryStart(query), query.message.chat.id);
     });
-  }
-
-  async execute(msg) {
-    const chatId = msg.chat.id;
-    await this.safeHandle(() => this.handleStart(chatId, msg.from), chatId);
   }
 
   async handleStart(chatId, userInfo) {
@@ -150,14 +149,12 @@ Chain: *${networkState.getNetworkDisplay(currentNetwork)}*
   }
 
   async handleCallback(query) {
-    const action = query.data;
-    const chatId = query.message.chat.id;
+    return this.menuHandler.handleCallback(query);
+  }
 
-    const handled = this.eventHandler.emit(action, query);
-
-    if (!handled) {
-      console.warn(`Unhandled callback action: ${action}`);
-    }
+  async execute(msg) {
+    const chatId = msg.chat.id;
+    await this.menuHandler.showMainMenu(chatId, msg.from);
   }
 
   async safeHandle(fn, chatId) {
