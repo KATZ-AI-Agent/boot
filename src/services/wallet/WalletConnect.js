@@ -3,7 +3,7 @@ import { WalletConnectModal } from "@walletconnect/modal";
 import { EventEmitter } from "events";
 import { User } from "../../models/User.js";
 import { ErrorHandler } from "../../core/errors/index.js";
-
+console.log('✅ WalletConnectService module is being loaded...');
 class WalletConnectService extends EventEmitter {
   constructor() {
     super();

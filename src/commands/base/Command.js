@@ -15,17 +15,6 @@ export class Command {
   }
 
   /**
-   * Registers the command with the bot.
-   */
-  register() {
-    if (this.pattern) {
-      this.bot.onText(this.pattern, (msg) => {
-        this.safeExecute(msg);
-      });
-    }
-  }
-
-  /**
    * Executes the command logic safely.
    * @param {Object} msg - The Telegram message object.
    */

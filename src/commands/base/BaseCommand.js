@@ -15,12 +15,6 @@ export class BaseCommand extends EventEmitter {
     this.pattern = null;
   }
 
-  register() {
-    if (this.pattern) {
-      this.bot.onText(this.pattern, (msg) => this.safeExecute(msg));
-    }
-  }
-
   async safeExecute(msg) {
     try {
       await this.execute(msg);

@@ -1,4 +1,3 @@
-
 import { eventHandler } from '../events/EventHandler.js'; 
 import { CommandRegistry } from './registry.js';
 import { StartCommand } from './start/handlers/StartCommand.js';
@@ -18,8 +17,7 @@ import { WalletsCommand } from './wallets/WalletsCommand.js';
 import { ConnectWalletCommand } from './wallets/ConnectWalletCommand.js';
 import { SettingsCommand } from './settings/SettingsCommand.js';
 
-
-export function setupCommands(bot) {
+export async function setupCommands(bot) {
   // Create registry
   const registry = new CommandRegistry(bot);
 
@@ -38,13 +36,19 @@ export function setupCommands(bot) {
     new TimedOrdersCommand(bot, eventHandler),
     new PriceAlertsCommand(bot, eventHandler),
     new PumpFunCommand(bot, eventHandler),
-    new WalletsCommand(bot),
-    new ConnectWalletCommand(bot),
+    new WalletsCommand(bot, eventHandler),
+    new ConnectWalletCommand(bot, eventHandler),
     new SettingsCommand(bot, eventHandler),
   ];
 
-  // Register commands
-  commands.forEach(command => registry.registerCommand(command));
+  // Register commands and log each registration
+  for (const command of commands) {
+    console.log(`🔄 Registering command: ${command.command}`);
+    registry.registerCommand(command);
+  }
+
+  // Log total registered commands
+  console.log(`✅ Registered ${commands.length} commands successfully`);
 
   return registry;
 }

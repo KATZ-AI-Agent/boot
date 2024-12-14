@@ -7,7 +7,7 @@ export class CommandRegistry extends EventEmitter {
     super();
     this.bot = bot;
     this.commands = new Map();
-    this.messageHandler = new MessageHandler(bot, this);
+    this.messageHandler = null;
     this.initialized = false;
   }
 
@@ -15,11 +15,25 @@ export class CommandRegistry extends EventEmitter {
     if (this.initialized) return;
 
     try {
+      // Initialize MessageHandler
+      this.messageHandler = new MessageHandler(this.bot, this);
       await this.messageHandler.initialize();
+
+      // Set up command list with Telegram
+      const commandList = Array.from(this.commands.values()).map(cmd => ({
+        command: cmd.command.replace('/', ''),
+        description: cmd.description
+      }));
+
+      // Set bot commands
+      await this.bot.setMyCommands(commandList);
+
       this.initialized = true;
       this.emit('initialized');
+      console.log('✅ CommandRegistry initialized with', this.commands.size, 'commands');
       return true;
     } catch (error) {
+      console.error('❌ Error initializing CommandRegistry:', error);
       await ErrorHandler.handle(error);
       throw error;
     }
@@ -30,9 +44,13 @@ export class CommandRegistry extends EventEmitter {
       throw new Error('Invalid command format');
     }
 
+    // Store command in registry
     this.commands.set(command.command, command);
+
+    // Register command's own handlers if it has any
     command.register?.();
 
+    console.log(`✅ Registered command: ${command.command}`);
     this.emit('commandRegistered', {
       command: command.command,
       description: command.description
@@ -46,8 +64,19 @@ export class CommandRegistry extends EventEmitter {
     }));
   }
 
+  async handleCallback(query) {
+    for (const command of this.commands.values()) {
+      if (await command.handleCallback?.(query)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   cleanup() {
-    this.messageHandler.cleanup();
+    if (this.messageHandler) {
+      this.messageHandler.cleanup();
+    }
     this.commands.clear();
     this.removeAllListeners();
     this.initialized = false;

@@ -1,7 +1,7 @@
 import { UserState } from '../utils/userState.js';
 import { config } from '../core/config.js';
 import { networkService } from '../services/network/index.js';
-
+console.log('✅ NetworkState module is being loaded...');
 class NetworkStateManager {
   constructor() {
     this.defaultNetwork = 'ethereum';

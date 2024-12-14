@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
 import { ErrorHandler } from './errors/index.js';
 import { aiService } from '../services/ai/index.js';
-import { USER_STATES } from './constants.js';
 
 export class MessageHandler extends EventEmitter {
   constructor(bot, commandRegistry) {
@@ -9,152 +8,181 @@ export class MessageHandler extends EventEmitter {
     this.bot = bot;
     this.commandRegistry = commandRegistry;
     this.initialized = false;
+    this.metrics = {
+      messagesProcessed: 0,
+      commandsExecuted: 0,
+      callbacksHandled: 0,
+      errors: 0,
+    };
   }
 
   async initialize() {
     if (this.initialized) return;
 
+    console.log('🚀 Initializing MessageHandler...');
     try {
-      // Set up core message handlers
-      this.bot.on('message', this.handleMessage.bind(this));
-
-      this.// Handle callback queries
-      bot.on('callback_query', async (query) => {
+      // Setup message handler
+      this.bot.on('message', async (msg) => {
         try {
-          const handled = await registry.handleCallback(query);
-          if (!handled) {
-            console.warn('Unhandled callback query:', query.data);
-          }
-          await bot.answerCallbackQuery(query.id);
+          this.metrics.messagesProcessed += 1;
+          await this.handleMessage(msg);
         } catch (error) {
-          await ErrorHandler.handle(error, bot, query.from.id);
-          console.error('Error handling callback query:', error);
-          await bot.answerCallbackQuery(query.id, {
-            text: '❌ An error occurred while processing your request.',
-            show_alert: true
+          console.error('❌ Error handling message:', error);
+          this.metrics.errors += 1;
+          await ErrorHandler.handle(error, this.bot, msg.chat.id);
+        }
+      });
+
+      // Setup callback query handler
+      this.bot.on('callback_query', async (query) => {
+        try {
+          this.metrics.callbacksHandled += 1;
+          console.log('📥 Callback query received:', query.data);
+          const handled = await this.handleCallback(query);
+
+          // Answer callback only if it was handled
+          if (handled) {
+            await this.bot.answerCallbackQuery(query.id);
+          } else {
+            console.warn(`⚠️ Unhandled callback query: ${query.data}`);
+            await this.bot.answerCallbackQuery(query.id, {
+              text: '⚠️ Action not recognized.',
+              show_alert: true,
+            });
+          }
+        } catch (error) {
+          console.error('❌ Error handling callback:', error);
+          this.metrics.errors += 1;
+          await ErrorHandler.handle(error, this.bot, query.message?.chat?.id);
+          await this.bot.answerCallbackQuery(query.id, {
+            text: '❌ An error occurred',
+            show_alert: true,
           });
         }
       });
 
-      //Setup Voice message handlers
-      this.bot.on('voice', this.handleVoice.bind(this));
-
       this.initialized = true;
       console.log('✅ MessageHandler initialized successfully');
-      return true;
     } catch (error) {
-      console.error('❌ Error initializing MessageHandler:', error);
+      console.error('❌ Error during MessageHandler initialization:', error);
       throw error;
     }
   }
 
   async handleMessage(msg) {
-    try {
-      // Skip non-text messages
-      if (!msg.text) return;
+    if (!msg.text) return; // Skip non-text messages
 
-      // Check for command pattern match
-      for (const command of this.commandRegistry.commands.values()) {
-        if (command.pattern?.test(msg.text)) {
+    console.log(`📥 Received message: "${msg.text}" from user ${msg.from.id}`);
+
+    try {
+      // Prioritize exact command matches
+      if (msg.text.startsWith('/')) {
+        const command = this.commandRegistry.commands.get(msg.text.split(' ')[0]);
+        if (command) {
+          console.log(`🎯 Executing exact command: ${command.command}`);
+          this.metrics.commandsExecuted += 1;
           await command.execute(msg);
-          this.emit('commandExecuted', {
-            command: command.command,
-            userId: msg.from.id
-          });
           return;
         }
       }
 
-      // Handle natural language input
+      // Check for pattern-based command matches
+      for (const command of this.commandRegistry.commands.values()) {
+        if (command.pattern?.test(msg.text)) {
+          console.log(`🎯 Executing pattern-matched command: ${command.command}`);
+          this.metrics.commandsExecuted += 1;
+          await command.execute(msg);
+          return;
+        }
+      }
+
+      // Handle natural language processing
       if (msg.text.toLowerCase().startsWith('hey katz')) {
+        console.log('🗣️ Handling natural language input...');
         await this.handleNaturalLanguage(msg);
         return;
       }
 
       // Handle state-based input
       for (const command of this.commandRegistry.commands.values()) {
-        if (command.handleInput && await command.handleInput(msg)) {
-          this.emit('inputHandled', {
-            command: command.command,
-            userId: msg.from.id
-          });
+        if (command.handleInput && (await command.handleInput(msg))) {
+          console.log('🛠️ State-based input handled.');
           return;
         }
       }
+
+      // Default response for unrecognized commands in private chats
+      if (msg.chat.type === 'private' && msg.text.startsWith('/')) {
+        await this.bot.sendMessage(
+          msg.chat.id,
+          '⚠️ Command not recognized. Type /help to see available commands.',
+          { parse_mode: 'Markdown' }
+        );
+      }
     } catch (error) {
-      await ErrorHandler.handle(error, this.bot, msg.chat.id);
+      console.error('❌ Error processing message:', error);
+      this.metrics.errors += 1;
+      throw error;
     }
   }
 
   async handleCallback(query) {
+    console.log(`📥 Processing callback: ${query.data} from user ${query.from.id}`);
+
     try {
-      // Handle command-specific callbacks
       for (const command of this.commandRegistry.commands.values()) {
         if (await command.handleCallback?.(query)) {
-          this.emit('callbackHandled', {
-            command: command.command,
-            action: query.data,
-            userId: query.from.id
-          });
-          return;
+          console.log(`🎯 Callback handled by command: ${command.command}`);
+          return true; // Callback was successfully handled
         }
       }
 
-      // Answer callback query to remove loading state
-      await this.bot.answerCallbackQuery(query.id);
+      console.warn(`⚠️ No handler found for callback: ${query.data}`);
+      return false; // Callback not handled
     } catch (error) {
-      await ErrorHandler.handle(error, this.bot, query.message.chat.id);
-      await this.bot.answerCallbackQuery(query.id, {
-        text: '❌ An error occurred',
-        show_alert: true
-      });
-    }
-  }
-
-  async handleVoice(msg) {
-    try {
-      const result = await aiService.processVoiceCommand(msg.voice.file_id, msg.from.id);
-      
-      await this.bot.sendMessage(msg.chat.id, result.response, {
-        parse_mode: 'Markdown'
-      });
-
-      if (result.audio) {
-        await this.bot.sendVoice(msg.chat.id, result.audio);
-      }
-
-      this.emit('voiceHandled', {
-        userId: msg.from.id,
-        duration: msg.voice.duration
-      });
-    } catch (error) {
-      await ErrorHandler.handle(error, this.bot, msg.chat.id);
+      console.error('❌ Error processing callback:', error);
+      this.metrics.errors += 1;
+      throw error;
     }
   }
 
   async handleNaturalLanguage(msg) {
     try {
-      const response = await aiService.generateResponse(
-        msg.text,
-        'chat',
-        msg.from.id
-      );
+      console.log('🗣️ Processing natural language input...');
+      const response = await aiService.generateResponse(msg.text, 'chat', msg.from.id);
+      await this.bot.sendMessage(msg.chat.id, response, { parse_mode: 'Markdown' });
 
-      await this.bot.sendMessage(msg.chat.id, response, {
-        parse_mode: 'Markdown'
-      });
-
-      this.emit('naturalLanguageHandled', {
+      this.emit('naturalLanguageProcessed', {
         userId: msg.from.id,
-        text: msg.text
+        text: msg.text,
       });
     } catch (error) {
-      await ErrorHandler.handle(error, this.bot, msg.chat.id);
+      console.error('❌ Error processing natural language input:', error);
+      this.metrics.errors += 1;
+      throw error;
     }
   }
 
+  getMetrics() {
+    return {
+      ...this.metrics,
+      uptime: process.uptime(),
+      memoryUsage: process.memoryUsage(),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   cleanup() {
-    this.removeAllListeners();
-    this.initialized = false;
+    try {
+      console.log('🧹 Cleaning up MessageHandler...');
+      this.bot.removeAllListeners(); // Remove all listeners for safety
+      this.removeAllListeners(); // Remove any event listeners on MessageHandler itself
+      this.metrics = { messagesProcessed: 0, commandsExecuted: 0, callbacksHandled: 0, errors: 0 };
+      this.initialized = false;
+      console.log('✅ MessageHandler cleanup completed.');
+    } catch (error) {
+      console.error('❌ Error during MessageHandler cleanup:', error);
+      throw error;
+    }
   }
 }
