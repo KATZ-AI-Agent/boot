@@ -1,171 +1,292 @@
 import { NetworkProvider } from './base.js';
 import { ethers } from 'ethers';
 import { Alchemy } from 'alchemy-sdk';
-import { config } from '../../../core/config.js';
+import { circuitBreakers } from '../../../core/circuit-breaker/index.js';
+import { BREAKER_CONFIGS } from '../../../core/circuit-breaker/index.js';
+import axios from 'axios';
+
+const NETWORK_CONFIGS = {
+  ethereum: {
+    chainId: 1,
+    name: 'mainnet',
+    ensAddress: '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'
+  },
+  base: {
+    chainId: 8453,
+    name: 'base',
+    ensAddress: null
+  }
+};
 
 export class EVMProvider extends NetworkProvider {
   constructor(networkConfig) {
     super();
-
-    if (!networkConfig || typeof networkConfig.rpcUrl !== 'string' || typeof networkConfig.name !== 'string') {
-      throw new Error('Invalid network configuration passed to EVMProvider.');
+    if (!networkConfig?.rpcUrl) {
+      throw new Error('Invalid network configuration: RPC URL is required');
     }
 
     this.networkConfig = networkConfig;
     this.provider = null;
     this.alchemy = null;
-    this.isInitialized = false;
+    this.gasPriceCache = {
+      price: null,
+      timestamp: 0,
+      ttl: 12000 // 12 second cache
+    };
+    this.fallbackProviders = [];
+    this.networkName = networkConfig.name.toLowerCase();
   }
 
-  /**
-   * Initializes the provider by setting up ethers.js and Alchemy instances.
-   */
   async initialize() {
     try {
       console.log(`🔄 Initializing EVMProvider for network: ${this.networkConfig.name}...`);
 
-      // Create Ethers.js provider
-      this.provider = new ethers.JsonRpcProvider(this.networkConfig.rpcUrl);
+      // Get network configuration
+      const networkInfo = NETWORK_CONFIGS[this.networkName] || {
+        chainId: this.networkConfig.chainId,
+        name: this.networkName
+      };
 
-      // Create Alchemy instance (if API key is provided)
-      if (config.alchemyApiKey) {
+      // Initialize primary provider with proper network configuration
+      this.provider = new ethers.JsonRpcProvider(
+        this.networkConfig.rpcUrl,
+        {
+          chainId: networkInfo.chainId,
+          name: networkInfo.name,
+          ensAddress: networkInfo.ensAddress
+        }
+      );
+
+      // Add fallback providers
+      if (this.networkConfig.fallbackRpcUrls?.length) {
+        this.fallbackProviders = this.networkConfig.fallbackRpcUrls.map(url => 
+          new ethers.JsonRpcProvider(url, networkInfo)
+        );
+      }
+
+      // Initialize Alchemy if API key is provided
+      if (this.networkConfig.alchemyApiKey) {
         this.alchemy = new Alchemy({
-          apiKey: config.alchemyApiKey,
-          network: this.networkConfig.name.toLowerCase(),
+          apiKey: this.networkConfig.alchemyApiKey,
+          network: networkInfo.name
         });
       }
 
-      // Test the provider by fetching the latest block number
+      // Test connection
       const blockNumber = await this.provider.getBlockNumber();
       console.log(`✅ EVMProvider initialized for ${this.networkConfig.name}. Latest Block: ${blockNumber}`);
 
-      this.isInitialized = true;
+      return true;
     } catch (error) {
       console.error(`❌ Error initializing EVMProvider for ${this.networkConfig.name}:`, error);
       throw error;
     }
   }
 
-    /**
-   * Fetches the current gas price for a given network.
-   * Dynamically creates instances of the provider based on the network type.
-   *
-   * @param {string} network - The name of the network (e.g., 'ethereum', 'base', 'solana').
-   * @returns {Promise<number>} The gas price in Gwei (for EVM) or lamports (for Solana).
-   */
-    async fetchGasPrice(network) {
+  async getGasPrice() {
+    return circuitBreakers.executeWithBreaker(
+      'network',
+      async () => {
+        try {
+          // Check cache first
+          if (this.isGasPriceCacheValid()) {
+            return this.gasPriceCache.price;
+          }
+
+          // Try multiple methods to get gas price
+          const gasPrice = await this.fetchGasPriceWithFallback();
+          
+          // Update cache
+          this.gasPriceCache = {
+            price: gasPrice,
+            timestamp: Date.now(),
+            ttl: 12000
+          };
+
+          return gasPrice;
+        } catch (error) {
+          console.error(`❌ Error fetching gas price for ${this.networkConfig.name}:`, error);
+          throw error;
+        }
+      },
+      BREAKER_CONFIGS.network
+    );
+  }
+
+  async fetchGasPriceWithFallback() {
+    const errors = [];
+
+    // Method 1: Try primary provider
+    try {
+      const feeData = await this.provider.getFeeData();
+      if (feeData?.gasPrice) {
+        return {
+          price: feeData.gasPrice.toString(),
+          formatted: `${ethers.formatUnits(feeData.gasPrice, 'gwei')} Gwei`
+        };
+      }
+    } catch (error) {
+      errors.push({ method: 'primary', error });
+    }
+
+    // Method 2: Try fallback providers
+    for (const provider of this.fallbackProviders) {
       try {
-        if (!network || typeof network !== 'string') {
-          throw new Error('Invalid network specified.');
+        const feeData = await provider.getFeeData();
+        if (feeData?.gasPrice) {
+          return {
+            price: feeData.gasPrice.toString(),
+            formatted: `${ethers.formatUnits(feeData.gasPrice, 'gwei')} Gwei`
+          };
         }
-
-        let gasPrice;
-
-        if (network === 'ethereum' || network === 'base') {
-          // Create an EVMProvider instance dynamically
-          const evmProvider = new EVMProvider({
-            name: network,
-            rpcUrl: config.networks[network]?.rpcUrl,
-          });
-
-          // Initialize the EVMProvider instance
-          await evmProvider.initialize();
-
-          // Fetch gas price using EVMProvider
-          const rawGasPrice = await evmProvider.provider.getGasPrice(); // Native ethers.js method
-          gasPrice = parseFloat(ethers.utils.formatUnits(rawGasPrice, 'gwei')); // Convert to Gwei
-
-          console.log(`✅ Gas price for ${network}: ${gasPrice} Gwei`);
-        } else if (network === 'solana') {
-          // Create a SolanaProvider instance dynamically
-          const solanaProvider = new SolanaProvider({
-            name: network,
-            rpcUrl: config.networks[network]?.rpcUrl,
-          });
-
-          // Initialize the SolanaProvider instance
-          await solanaProvider.initialize();
-
-          // Fetch gas price for Solana
-          const feeCalculator = await solanaProvider.connection.getRecentBlockhash();
-          gasPrice = feeCalculator?.feeCalculator?.lamportsPerSignature;
-
-          console.log(`✅ Gas price for Solana: ${gasPrice} lamports`);
-        } else {
-          throw new Error(`Unsupported network type: ${network}`);
-        }
-
-        return gasPrice;
       } catch (error) {
-        console.error(`❌ Error fetching gas price for ${network}:`, error.message);
-        throw new Error(`Failed to fetch gas price for ${network}: ${error.message}`);
+        errors.push({ method: 'fallback', error });
       }
     }
 
-  /**
-   * Fetches the latest block number from the Ethereum network.
-   * @returns {number} The latest block number.
-   */
-  async getBlockNumber() {
-    if (!this.isInitialized) {
-      throw new Error('EVMProvider is not initialized. Call initialize() first.');
+    // Method 3: Try Alchemy if available
+    if (this.alchemy) {
+      try {
+        const gasPrice = await this.alchemy.core.getGasPrice();
+        return {
+          price: gasPrice.toString(),
+          formatted: `${ethers.formatUnits(gasPrice, 'gwei')} Gwei`
+        };
+      } catch (error) {
+        errors.push({ method: 'alchemy', error });
+      }
     }
 
+    // Method 4: Direct RPC call as last resort
     try {
-      return await this.provider.getBlockNumber();
+      const response = await axios.post(this.networkConfig.rpcUrl, {
+        jsonrpc: '2.0',
+        method: 'eth_gasPrice',
+        params: [],
+        id: 1
+      });
+
+      if (response.data?.result) {
+        const gasPrice = BigInt(response.data.result);
+        return {
+          price: gasPrice.toString(),
+          formatted: `${ethers.formatUnits(gasPrice, 'gwei')} Gwei`
+        };
+      }
     } catch (error) {
-      console.error(`❌ Error fetching block number for ${this.networkConfig.name}:`, error);
+      errors.push({ method: 'rpc', error });
+    }
+
+    // If all methods fail, throw comprehensive error
+    throw new Error(`Failed to fetch gas price using all methods: ${JSON.stringify(errors)}`);
+  }
+
+  isGasPriceCacheValid() {
+    return (
+      this.gasPriceCache.price &&
+      Date.now() - this.gasPriceCache.timestamp < this.gasPriceCache.ttl
+    );
+  }
+
+  async estimateGas(transaction) {
+    return circuitBreakers.executeWithBreaker(
+      'network',
+      async () => {
+        try {
+          const gasEstimate = await this.provider.estimateGas(transaction);
+          const gasPrice = await this.getGasPrice();
+          
+          return {
+            gasLimit: gasEstimate.toString(),
+            gasPrice: gasPrice.price,
+            totalCost: (BigInt(gasEstimate) * BigInt(gasPrice.price)).toString(),
+            formatted: `${ethers.formatEther(BigInt(gasEstimate) * BigInt(gasPrice.price))} ETH`
+          };
+        } catch (error) {
+          console.error('Error estimating gas:', error);
+          throw error;
+        }
+      },
+      BREAKER_CONFIGS.network
+    );
+  }
+
+  async sendTransaction(signedTransaction) {
+    return circuitBreakers.executeWithBreaker(
+      'network',
+      async () => {
+        try {
+          const tx = await this.provider.broadcastTransaction(signedTransaction);
+          return await tx.wait();
+        } catch (error) {
+          console.error('Error sending transaction:', error);
+          throw error;
+        }
+      },
+      BREAKER_CONFIGS.network
+    );
+  }
+
+  async getTransactionReceipt(txHash) {
+    return circuitBreakers.executeWithBreaker(
+      'network',
+      async () => {
+        try {
+          return await this.provider.getTransactionReceipt(txHash);
+        } catch (error) {
+          console.error('Error getting transaction receipt:', error);
+          throw error;
+        }
+      },
+      BREAKER_CONFIGS.network
+    );
+  }
+
+  async validateTransaction(transaction) {
+    try {
+      const [gasEstimate, balance] = await Promise.all([
+        this.estimateGas(transaction),
+        this.provider.getBalance(transaction.from)
+      ]);
+
+      const totalCost = BigInt(gasEstimate.totalCost);
+      const hasEnoughBalance = balance >= totalCost;
+
+      return {
+        isValid: hasEnoughBalance,
+        estimatedCost: gasEstimate.formatted,
+        balance: ethers.formatEther(balance),
+        errors: hasEnoughBalance ? [] : ['Insufficient balance for gas']
+      };
+    } catch (error) {
+      console.error('Error validating transaction:', error);
       throw error;
     }
   }
 
-  /**
-   * Checks whether a given address is a contract address.
-   * @param {string} address The address to check.
-   * @returns {boolean} True if the address is a contract, false otherwise.
-   */
-  async isContractAddress(address) {
-    if (!this.isInitialized) {
-      throw new Error('EVMProvider is not initialized. Call initialize() first.');
-    }
-
-    try {
-      const code = await this.provider.getCode(address);
-      return code !== '0x';
-    } catch (error) {
-      console.error(`❌ Error checking contract address for ${this.networkConfig.name}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Cleans up the provider and releases resources.
-   */
-  cleanup() {
+  async cleanup() {
     try {
       if (this.provider) {
-        console.log(`🧹 Cleaning up EVM Provider for ${this.networkConfig.name}...`);
+        await this.provider.destroy();
         this.provider = null;
       }
 
-      if (this.alchemy) {
-        console.log(`🧹 Cleaning up Alchemy instance for ${this.networkConfig.name}...`);
-        this.alchemy = null;
+      // Cleanup fallback providers
+      for (const provider of this.fallbackProviders) {
+        await provider.destroy();
       }
+      this.fallbackProviders = [];
 
-      this.isInitialized = false;
-      console.log(`✅ EVMProvider for ${this.networkConfig.name} cleaned up successfully.`);
+      // Clear cache
+      this.gasPriceCache = {
+        price: null,
+        timestamp: 0,
+        ttl: 12000
+      };
+
+      console.log(`✅ Cleaned up EVMProvider for ${this.networkConfig.name}`);
     } catch (error) {
-      console.error(`❌ Error during cleanup for ${this.networkConfig.name}:`, error);
+      console.error('Error during cleanup:', error);
     }
   }
 }
-
-// Helper to dynamically create providers based on config
-export const createEVMProviders = () => {
-  const providers = {};
-  for (const [networkName, rpcUrl] of Object.entries(config.rpcUrls)) {
-    providers[networkName] = new EVMProvider({ name: networkName, rpcUrl });
-  }
-  return providers;
-};

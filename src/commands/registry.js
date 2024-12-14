@@ -1,6 +1,5 @@
 import { EventEmitter } from 'events';
 import { ErrorHandler } from '../core/errors/index.js';
-import { MessageHandler } from '../core/MessageHandler.js';
 
 export class CommandRegistry extends EventEmitter {
   constructor(bot) {
@@ -9,32 +8,28 @@ export class CommandRegistry extends EventEmitter {
     this.commands = new Map();
     this.messageHandler = null;
     this.initialized = false;
+    this.callbackHandlers = new Map();
   }
 
   async initialize() {
     if (this.initialized) return;
 
     try {
-      // Initialize MessageHandler
-      this.messageHandler = new MessageHandler(this.bot, this);
-      await this.messageHandler.initialize();
+      // Register global callback handlers
+      this.registerGlobalCallbacks();
 
-      // Set up command list with Telegram
       const commandList = Array.from(this.commands.values()).map(cmd => ({
         command: cmd.command.replace('/', ''),
         description: cmd.description
       }));
 
-      // Set bot commands
       await this.bot.setMyCommands(commandList);
 
       this.initialized = true;
-      this.emit('initialized');
       console.log('✅ CommandRegistry initialized with', this.commands.size, 'commands');
       return true;
     } catch (error) {
       console.error('❌ Error initializing CommandRegistry:', error);
-      await ErrorHandler.handle(error);
       throw error;
     }
   }
@@ -44,40 +39,99 @@ export class CommandRegistry extends EventEmitter {
       throw new Error('Invalid command format');
     }
 
-    // Store command in registry
     this.commands.set(command.command, command);
-
-    // Register command's own handlers if it has any
-    command.register?.();
+    
+    // Register command's callback handlers
+    if (command.getCallbackHandlers) {
+      const handlers = command.getCallbackHandlers();
+      handlers.forEach((handler, action) => {
+        this.callbackHandlers.set(action, handler.bind(command));
+      });
+    }
 
     console.log(`✅ Registered command: ${command.command}`);
-    this.emit('commandRegistered', {
-      command: command.command,
-      description: command.description
+  }
+
+  registerGlobalCallbacks() {
+    // Register common callbacks that should work across all commands
+    const globalCallbacks = [
+      'back_to_menu',
+      'switch_network',
+      'retry_action'
+    ];
+
+    globalCallbacks.forEach(action => {
+      this.callbackHandlers.set(action, async (query) => {
+        const command = this.findCommandForCallback(action);
+        if (command) {
+          return command.handleCallback(query);
+        }
+        return false;
+      });
     });
   }
 
-  getCommands() {
-    return Array.from(this.commands.values()).map(cmd => ({
-      command: cmd.command,
-      description: cmd.description
-    }));
+  findCommandForCallback(action) {
+    // Find the appropriate command to handle the callback
+    for (const command of this.commands.values()) {
+      if (command.canHandleCallback && command.canHandleCallback(action)) {
+        return command;
+      }
+    }
+    return null;
   }
 
   async handleCallback(query) {
-    for (const command of this.commands.values()) {
-      if (await command.handleCallback?.(query)) {
-        return true;
+    try {
+      const { data: action } = query;
+      console.log('🔄 Processing callback:', action);
+
+      // Check for registered callback handler
+      const handler = this.callbackHandlers.get(action);
+      if (handler) {
+        return await handler(query);
       }
+
+      // Find command that can handle this callback
+      for (const command of this.commands.values()) {
+        if (command.handleCallback) {
+          const handled = await command.handleCallback(query);
+          if (handled) {
+            console.log('✅ Callback handled by command:', command.command);
+            return true;
+          }
+        }
+      }
+
+      console.warn('⚠️ No handler found for callback:', action);
+      return false;
+    } catch (error) {
+      console.error('❌ Error in callback handler:', error);
+      await ErrorHandler.handle(error, this.bot, query.message?.chat?.id);
+      return false;
     }
-    return false;
+  }
+
+  findCommand(text) {
+    // First try exact command match
+    const command = this.commands.get(text.split(' ')[0]);
+    if (command) return command;
+
+    // Then try pattern match
+    for (const cmd of this.commands.values()) {
+      if (cmd.pattern?.test(text)) return cmd;
+    }
+
+    return null;
+  }
+
+  getCommands() {
+    return Array.from(this.commands.values());
   }
 
   cleanup() {
-    if (this.messageHandler) {
-      this.messageHandler.cleanup();
-    }
     this.commands.clear();
+    this.callbackHandlers.clear();
     this.removeAllListeners();
     this.initialized = false;
   }

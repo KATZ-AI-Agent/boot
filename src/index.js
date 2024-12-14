@@ -5,13 +5,11 @@ import { bot } from './core/bot.js';
 import { setupCommands } from './commands/index.js';
 import { MessageHandler } from './core/MessageHandler.js';
 import { db } from './core/database.js';
-import { pumpFunService } from './services/pumpfun/index.js';
+import { rateLimiter } from './core/rate-limiting/RateLimiter.js';
+import { circuitBreakers } from './core/circuit-breaker/index.js';
 import { walletService } from './services/wallet/index.js';
-import { networkService } from './services/network/index.js';
 import { ErrorHandler } from './core/errors/index.js';
-import { setTimeout } from 'timers/promises';
 
-// Cleanup and Shutdown Handling
 let isShuttingDown = false;
 
 async function cleanup(botInstance) {
@@ -21,10 +19,8 @@ async function cleanup(botInstance) {
   console.log('🛑 Shutting down AI Agent...');
   try {
     await db.disconnect();
-    pumpFunService.disconnect?.();
-    walletService.cleanup();
-    networkService.cleanup();
-
+    await walletService.cleanup();
+    
     if (botInstance) {
       await botInstance.stopPolling();
     }
@@ -37,19 +33,39 @@ async function cleanup(botInstance) {
   }
 }
 
-async function initializeService(serviceName, service) {
-  console.log(`🔧 Initializing ${serviceName}...`);
-  await service.initialize();
-  console.log(`✅ ${serviceName} initialized successfully.`);
+async function initializeServices() {
+  console.log('🔧 Initializing core services...');
+
+  try {
+    // Initialize database first
+    console.log('📡 Connecting to MongoDB...');
+    await db.connect();
+
+    // Initialize rate limiter
+    console.log('⚡ Initializing rate limiter...');
+    await rateLimiter.initialize();
+
+    // Initialize circuit breakers
+    console.log('🔌 Setting up circuit breakers...');
+    await circuitBreakers.initialize();
+
+    // Initialize wallet service
+    console.log('👛 Initializing wallet service...');
+    await walletService.initialize();
+
+    console.log('✅ Core services initialized successfully.');
+  } catch (error) {
+    console.error('❌ Error initializing core services:', error);
+    throw error;
+  }
 }
 
 async function startAgent() {
   try {
     console.log('🚀 Starting KATZ AI Agent...');
 
-    // 1. Database Initialization
-    console.log('📡 Connecting to MongoDB...');
-    await db.connect();
+    // 1. Initialize core services
+    await initializeServices();
 
     // 2. Command Registry Setup
     console.log('📜 Setting up command registry...');
@@ -60,17 +76,9 @@ async function startAgent() {
     const messageHandler = new MessageHandler(bot, commandRegistry);
     await messageHandler.initialize();
 
-    // 4. Independent Services Initialization (in Parallel)
-    console.log('🔧 Initializing core services...');
-    await Promise.all([
-      initializeService('WalletService', walletService),
-      initializeService('NetworkService', networkService),
-    ]);
-
-    // 5. Start Telegram Bot Polling
+    // 4. Start Telegram Bot Polling
     console.log('🤖 Starting Telegram bot...');
     await bot.startPolling();
-    console.log('✅ Bot is now polling.');
 
     console.log('✅ KATZ AI Agent is up and running!');
     return bot;

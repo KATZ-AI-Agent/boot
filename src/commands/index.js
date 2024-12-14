@@ -36,7 +36,7 @@ export async function setupCommands(bot) {
     new TimedOrdersCommand(bot, eventHandler),
     new PriceAlertsCommand(bot, eventHandler),
     new PumpFunCommand(bot, eventHandler),
-    new WalletsCommand(bot, eventHandler),
+    new WalletsCommand(bot),
     new ConnectWalletCommand(bot, eventHandler),
     new SettingsCommand(bot, eventHandler),
   ];

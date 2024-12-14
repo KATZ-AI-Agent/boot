@@ -1,4 +1,6 @@
 console.log('✅ WalletService module is being loaded...');
+
+import { User } from '../../models/User.js';
 import { EVMWallet } from './wallets/evm.js';
 import { SolanaWallet } from './wallets/solana.js';
 import { NETWORKS } from '../../core/constants.js';
@@ -23,22 +25,56 @@ class WalletService extends EventEmitter {
     }
 
     async initialize() {
-        try {
-            const database = db.getDatabase();
-            this.usersCollection = database.collection('users');
-            this.metricsCollection = database.collection('walletMetrics');
-
-            if (!this.usersCollection || !this.metricsCollection) {
-                throw new Error('One or more collections failed to initialize.');
-            }
-
-            await this.initializeMetrics();
-            console.log('✅ WalletService and collections initialized successfully.');
-        } catch (error) {
-            await ErrorHandler.handle(error, null, null, 'Error initializing WalletService or collections');
-            throw error;
-        }
-    }
+      if (this.isInitialized) return;
+  
+      try {
+          // Initialize database connection
+          await db.connect();
+          const database = db.getDatabase();
+          
+          // Use Mongoose model instead of raw collection
+          this.usersCollection = User.model('User');
+          
+          // Initialize providers
+          await Promise.all(Object.entries(this.networkConfig).map(async ([network, config]) => {
+              const Provider = this.getProviderClass(network);
+              this.walletProviders[network] = new Provider(config);
+              await this.walletProviders[network].initialize();
+          }));
+  
+          this.isInitialized = true;
+          console.log('✅ WalletService initialized successfully');
+          return true;
+      } catch (error) {
+          console.error('❌ Error initializing WalletService:', error);
+          throw error;
+      }
+  }
+  
+  async getWallets(userId) {
+      if (!this.isInitialized) {
+          throw new Error('WalletService is not initialized. Call initialize() before use.');
+      }
+  
+      try {
+          // Use Mongoose findOne instead of raw collection
+          const user = await User.findOne({ telegramId: userId.toString() });
+          if (!user) return [];
+  
+          const wallets = [];
+          for (const [network, networkWallets] of Object.entries(user.wallets)) {
+              wallets.push(...networkWallets.map(wallet => ({
+                  ...wallet.toObject(),
+                  network
+              })));
+          }
+  
+          return wallets;
+      } catch (error) {
+          console.error('Error fetching wallets:', error);
+          throw error;
+      }
+  }  
 
     async initializeMetrics() {
         try {
@@ -123,29 +159,44 @@ class WalletService extends EventEmitter {
         }
     }
 
+    async getProvider(network) {
+      const provider = this.walletProviders[network];
+      if (!provider) {
+          throw new Error(`Unsupported network: ${network}`);
+      }
+      return provider;
+    }
+
     async getWallet(userId, address) {
+        if (!this.isInitialized) {
+            throw new Error('WalletService is not initialized');
+        }
+
         try {
-            if (!this.usersCollection) {
-                throw new Error('WalletService is not initialized. Call initialize() before use.');
+            // Check cache first
+            const cacheKey = `${userId}:${address}`;
+            const cached = this.walletCache.get(cacheKey);
+            if (cached && Date.now() - cached.timestamp < this.CACHE_DURATION) {
+                return cached.wallet;
             }
 
-            const cachedWallet = this.getFromCache(userId, address);
-            if (cachedWallet) return cachedWallet;
+            const user = await User.findOne({ telegramId: userId.toString() });
+            if (!user) return null;
 
-            const user = await this.usersCollection.findOne({ telegramId: userId.toString() }).lean();
-            if (!user || !user.wallets) return null;
-
+            // Search through all networks
             for (const [network, wallets] of Object.entries(user.wallets)) {
-                const wallet = wallets.find(w => w.address.toLowerCase() === address.toLowerCase());
+                const wallet = wallets.find(w => w.address === address);
                 if (wallet) {
                     const decryptedWallet = {
                         address: wallet.address,
-                        network,
                         privateKey: decrypt(wallet.encryptedPrivateKey),
-                        mnemonic: wallet.encryptedMnemonic ? decrypt(wallet.encryptedMnemonic) : null,
-                        createdAt: wallet.createdAt,
+                        mnemonic: decrypt(wallet.encryptedMnemonic),
+                        network,
+                        type: wallet.type || 'internal',
+                        createdAt: wallet.createdAt
                     };
 
+                    // Update cache
                     this.cacheWallet(userId, address, decryptedWallet);
                     return decryptedWallet;
                 }
@@ -153,34 +204,84 @@ class WalletService extends EventEmitter {
 
             return null;
         } catch (error) {
-            await ErrorHandler.handle(error, null, null, 'Error fetching wallet');
+            console.error('Error getting wallet:', error);
             throw error;
         }
     }
 
-    async getWallets(userId) {
+    async setAutonomousWallet(userId, address) {
+        if (!this.isInitialized) {
+            throw new Error('WalletService is not initialized');
+        }
+
         try {
-            if (!this.usersCollection) {
-                throw new Error('WalletService is not initialized. Call initialize() before use.');
+            const wallet = await this.getWallet(userId, address);
+            if (!wallet) {
+                throw new Error('Wallet not found');
             }
 
-            const user = await this.usersCollection.findOne(
-                { telegramId: userId.toString() },
-                { projection: { wallets: 1 } }
-            ).lean();
+            await User.updateOne(
+                { telegramId: userId.toString(), [`wallets.${wallet.network}`]: { $elemMatch: { address } } },
+                { $set: { [`wallets.${wallet.network}.$.isAutonomous`]: true } }
+            );
 
-            if (!user || !user.wallets) return [];
+            return true;
+        } catch (error) {
+            console.error('Error setting autonomous wallet:', error);
+            throw error;
+        }
+    }
 
-            return Object.entries(user.wallets).flatMap(([network, wallets]) =>
-                wallets.map(w => ({
-                    address: w.address,
-                    network,
-                    createdAt: w.createdAt,
-                }))
+    async getBalance(userId, address) {
+        if (!this.isInitialized) {
+            throw new Error('WalletService is not initialized');
+        }
+
+        try {
+            const wallet = await this.getWallet(userId, address);
+            if (!wallet) {
+                throw new Error('Wallet not found');
+            }
+
+            const provider = await this.getProvider(wallet.network);
+            return await provider.getBalance(address);
+        } catch (error) {
+            console.error('Error getting balance:', error);
+            throw error;
+        }
+    }
+
+    cacheWallet(userId, address, wallet) {
+        const cacheKey = `${userId}:${address}`;
+        this.walletCache.set(cacheKey, {
+            wallet,
+            timestamp: Date.now()
+        });
+    }
+
+    async incrementWalletTally(network) {
+        try {
+            const database = db.getDatabase();
+            await database.collection('walletMetrics').updateOne(
+                { network },
+                { $inc: { walletCount: 1 } }
             );
         } catch (error) {
-            await ErrorHandler.handle(error, null, null, 'Error fetching wallets');
-            throw error;
+            console.error('Error incrementing wallet tally:', error);
+            // Non-critical error, don't throw
+        }
+    }
+
+    async isAutonomousWallet(userId, network, address) {
+        try {
+            const user = await User.findOne({ telegramId: userId.toString() });
+            if (!user?.wallets?.[network]) return false;
+
+            const wallet = user.wallets[network].find(w => w.address === address);
+            return wallet?.isAutonomous || false;
+        } catch (error) {
+            console.error('Error checking autonomous status:', error);
+            return false;
         }
     }
 
@@ -206,14 +307,6 @@ class WalletService extends EventEmitter {
             await ErrorHandler.handle(error, null, null, 'Error deleting wallet');
             throw error;
         }
-    }
-
-    getProvider(network) {
-        const provider = this.walletProviders[network];
-        if (!provider) {
-            throw new Error(`Unsupported network: ${network}`);
-        }
-        return provider;
     }
 
     cacheWallet(userId, address, walletData) {
